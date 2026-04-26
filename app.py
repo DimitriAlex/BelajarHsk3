@@ -1,3 +1,4 @@
+import json
 import os
 import random
 from copy import deepcopy
@@ -6,9 +7,11 @@ import jieba
 import pandas as pd
 import streamlit as st
 
+native_rerun = st.rerun
+
 st.set_page_config(
     page_title="HSK 3 Master | Modern Learning",
-    page_icon="✨",
+    page_icon="âœ¨",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -16,6 +19,53 @@ st.set_page_config(
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(APP_DIR, "hsk3.xlsx")
+PROGRESS_FILE = os.path.join(APP_DIR, "progress.json")
+AVATAR_OPTIONS = ["😀", "😎", "🤓", "🧐", "🎯", "🌟", "📚", "🚀"]
+PERSISTED_SET_KEYS = {
+    "quiz_answered_set",
+    "cloze_answered_set",
+    "scramble_scored_set",
+    "wrong_quiz",
+    "wrong_cloze",
+    "wrong_scramble",
+    "favorites",
+    "mastered_vocab",
+}
+PERSISTED_KEYS = [
+    "profile_name",
+    "profile_avatar",
+    "theme_mode",
+    "menu",
+    "fc_page",
+    "selected_hanzi",
+    "score_quiz",
+    "score_cloze",
+    "score_scramble",
+    "quiz_answered_set",
+    "cloze_answered_set",
+    "scramble_scored_set",
+    "wrong_quiz",
+    "wrong_cloze",
+    "wrong_scramble",
+    "rep_mode",
+    "quiz_idx",
+    "quiz_mode",
+    "clz_idx",
+    "sc_idx",
+    "flashcard_search",
+    "hide_mastered",
+    "favorites",
+    "mastered_vocab",
+    "daily_target",
+    "current_streak",
+    "best_streak",
+    "quiz_attempts",
+    "quiz_correct_attempts",
+    "cloze_attempts",
+    "cloze_correct_attempts",
+    "scramble_attempts",
+    "scramble_correct_attempts",
+]
 
 
 def get_file_signature(file_path):
@@ -37,8 +87,59 @@ def validate_required_columns(sheet_name, df, required_columns):
     )
 
 
+def load_progress():
+    if not os.path.exists(PROGRESS_FILE):
+        return
+
+    try:
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return
+
+    for key in PERSISTED_KEYS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if key in PERSISTED_SET_KEYS:
+            st.session_state[key] = set(value)
+        else:
+            st.session_state[key] = value
+
+
+def to_json_safe(value):
+    if isinstance(value, set):
+        return [to_json_safe(item) for item in sorted(value)]
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except (TypeError, ValueError):
+            pass
+    return value
+
+
+def save_progress():
+    payload = {}
+    for key in PERSISTED_KEYS:
+        payload[key] = to_json_safe(st.session_state.get(key))
+
+    with open(PROGRESS_FILE, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
+def rerun_app():
+    save_progress()
+    native_rerun()
+
+
+def profile_is_complete():
+    return bool(str(st.session_state.profile_name).strip() and st.session_state.profile_avatar)
+
+
 def init_state():
     defaults = {
+        "profile_name": "",
+        "profile_avatar": "",
         "theme_mode": "Terang",
         "menu": "📇 Flashcard",
         "fc_page": 0,
@@ -83,6 +184,7 @@ def init_state():
         "cloze_correct_attempts": 0,
         "scramble_attempts": 0,
         "scramble_correct_attempts": 0,
+        "_progress_loaded": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -90,6 +192,9 @@ def init_state():
 
 
 init_state()
+if not st.session_state._progress_loaded:
+    load_progress()
+    st.session_state._progress_loaded = True
 
 
 def get_theme_css():
@@ -319,7 +424,7 @@ def build_quiz_pool(total, wrong_set):
             return list(wrong_set)
         st.info("Semua soal di mode ini sudah beres. Kembali ke mode Normal.")
         st.session_state.rep_mode = "Normal"
-        st.rerun()
+        rerun_app()
     return list(range(total))
 
 
@@ -343,7 +448,111 @@ def build_flashcard_indices():
     return result
 
 
+def render_profile_setup():
+    st.markdown(
+        """
+        <div class='glass-card' style='text-align:center'>
+            <h1 style='margin-bottom:0.4rem'>Mulai Belajar HSK 3</h1>
+            <p style='margin-bottom:0'>Isi username dan pilih avatar dulu. Progress kamu nanti akan tersimpan otomatis, jadi saat aplikasi dibuka lagi kamu bisa lanjut dari progres terakhir.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    _, center, _ = st.columns([1, 1.5, 1])
+    with center:
+        with st.form("profile_setup_form"):
+            username = st.text_input(
+                "Username",
+                value=st.session_state.profile_name,
+                max_chars=24,
+                placeholder="mis. Alex",
+            )
+            current_avatar = st.session_state.profile_avatar or AVATAR_OPTIONS[0]
+            avatar_index = (
+                AVATAR_OPTIONS.index(current_avatar)
+                if current_avatar in AVATAR_OPTIONS
+                else 0
+            )
+            avatar = st.radio(
+                "Pilih avatar",
+                AVATAR_OPTIONS,
+                index=avatar_index,
+                horizontal=True,
+            )
+            submitted = st.form_submit_button(
+                "Masuk dan simpan progress",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if submitted:
+            clean_username = username.strip()
+            if not clean_username:
+                st.error("Username wajib diisi dulu.")
+            else:
+                st.session_state.profile_name = clean_username
+                st.session_state.profile_avatar = avatar
+                rerun_app()
+
+
+def render_sidebar_profile():
+    st.markdown(
+        f"""
+        <div class="glass-soft" style="text-align:center">
+            <div style="font-size:2rem; margin-bottom:0.35rem">{st.session_state.profile_avatar}</div>
+            <div style="font-weight:800; font-size:1.1rem">{st.session_state.profile_name}</div>
+            <div style="opacity:0.75; font-size:0.85rem">Progress tersimpan otomatis</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("Ubah profil", expanded=False):
+        with st.form("profile_sidebar_form"):
+            username = st.text_input(
+                "Username",
+                value=st.session_state.profile_name,
+                max_chars=24,
+                key="profile_sidebar_name",
+            )
+            avatar_index = (
+                AVATAR_OPTIONS.index(st.session_state.profile_avatar)
+                if st.session_state.profile_avatar in AVATAR_OPTIONS
+                else 0
+            )
+            avatar = st.radio(
+                "Avatar",
+                AVATAR_OPTIONS,
+                index=avatar_index,
+                horizontal=True,
+                key="profile_sidebar_avatar",
+            )
+            submitted = st.form_submit_button("Simpan profil", use_container_width=True)
+
+        if submitted:
+            clean_username = username.strip()
+            if not clean_username:
+                st.error("Username wajib diisi.")
+            else:
+                st.session_state.profile_name = clean_username
+                st.session_state.profile_avatar = avatar
+                rerun_app()
+
+
 with st.sidebar:
+    if profile_is_complete():
+        render_sidebar_profile()
+    else:
+        st.markdown(
+            """
+            <div class="glass-soft">
+                <strong>Siapkan profil belajar</strong>
+                <p style="margin-bottom:0">Isi username dan pilih avatar di halaman utama. Setelah itu progress akan tersimpan otomatis di perangkat ini.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     st.markdown(
         f"""
         <div class="score-modern">
@@ -358,12 +567,12 @@ with st.sidebar:
         if st.button(label, key=f"menu_{label}", use_container_width=True):
             st.session_state.menu = label
             st.session_state.selected_hanzi = None
-            st.rerun()
+            rerun_app()
 
     st.divider()
     if st.button("🗑️ Reset seluruh skor", use_container_width=True):
         reset_scores()
-        st.rerun()
+        rerun_app()
 
     st.caption(f"Quiz: {st.session_state.score_quiz}")
     st.caption(f"Isi Kalimat: {st.session_state.score_cloze}")
@@ -383,7 +592,7 @@ with st.sidebar:
         st.session_state.clz_options = []
         st.session_state.quiz_answered = False
         st.session_state.clz_answered = False
-        st.rerun()
+        rerun_app()
 
     st.markdown("### 🎯 Target Harian")
     daily_target = st.slider("Jumlah latihan", 10, 100, st.session_state.daily_target, 5)
@@ -398,7 +607,7 @@ with st.sidebar:
     )
     if theme_mode != st.session_state.theme_mode:
         st.session_state.theme_mode = theme_mode
-        st.rerun()
+        rerun_app()
 
 
 def flashcard_view():
@@ -413,12 +622,12 @@ def flashcard_view():
         search_value = st.text_input(
             "Cari Hanzi / Pinyin / Arti",
             value=st.session_state.flashcard_search,
-            placeholder="mis. 学校 / xuexiao / sekolah",
+            placeholder="mis. å­¦æ ¡ / xuexiao / sekolah",
         )
         if search_value != st.session_state.flashcard_search:
             st.session_state.flashcard_search = search_value
             st.session_state.fc_page = 0
-            st.rerun()
+            rerun_app()
     with info_col:
         hide_mastered = st.toggle(
             "Sembunyikan yang dikuasai",
@@ -427,7 +636,7 @@ def flashcard_view():
         if hide_mastered != st.session_state.hide_mastered:
             st.session_state.hide_mastered = hide_mastered
             st.session_state.fc_page = 0
-            st.rerun()
+            rerun_app()
         st.markdown(
             f"<div class='hint-box'>Favorit: <strong>{len(st.session_state.favorites)}</strong><br>Dikuasai: <strong>{len(st.session_state.mastered_vocab)}</strong></div>",
             unsafe_allow_html=True,
@@ -439,11 +648,11 @@ def flashcard_view():
         if st.button("Reset pencarian", use_container_width=True):
             st.session_state.flashcard_search = ""
             st.session_state.fc_page = 0
-            st.rerun()
+            rerun_app()
         if st.session_state.hide_mastered and st.button("Tampilkan yang sudah dikuasai", use_container_width=True):
             st.session_state.hide_mastered = False
             st.session_state.fc_page = 0
-            st.rerun()
+            rerun_app()
         return
 
     per_page = 24
@@ -456,7 +665,7 @@ def flashcard_view():
     with col1:
         if st.button("◀", disabled=st.session_state.fc_page == 0):
             st.session_state.fc_page -= 1
-            st.rerun()
+            rerun_app()
     with col2:
         st.markdown(
             f"<div style='text-align:center'>Halaman {st.session_state.fc_page + 1} / {total_pages}</div>",
@@ -465,7 +674,7 @@ def flashcard_view():
     with col3:
         if st.button("▶", disabled=st.session_state.fc_page >= total_pages - 1):
             st.session_state.fc_page += 1
-            st.rerun()
+            rerun_app()
 
     if st.session_state.selected_hanzi is None:
         st.markdown('<div class="grid-floating">', unsafe_allow_html=True)
@@ -474,11 +683,11 @@ def flashcard_view():
             row = vocab.iloc[idx]
             label = row["Kosakata"]
             if idx in st.session_state.favorites:
-                label = f"★ {label}"
+                label = f"⭐ {label}"
             with cols[pos % 4]:
                 if st.button(label, key=f"fc_{idx}", use_container_width=True):
                     st.session_state.selected_hanzi = idx
-                    st.rerun()
+                    rerun_app()
         st.markdown("</div>", unsafe_allow_html=True)
     else:
         idx = st.session_state.selected_hanzi
@@ -501,28 +710,28 @@ def flashcard_view():
         btn1, btn2, btn3 = st.columns(3)
         with btn1:
             if st.button(
-                "★ Simpan Favorit" if idx not in st.session_state.favorites else "✓ Favorit Tersimpan",
+                "⭐ Simpan Favorit" if idx not in st.session_state.favorites else "âœ“ Favorit Tersimpan",
                 use_container_width=True,
             ):
                 st.session_state.favorites.add(idx)
-                st.rerun()
+                rerun_app()
         with btn2:
             if st.button(
-                "✔ Tandai Dikuasai" if idx not in st.session_state.mastered_vocab else "✓ Sudah Dikuasai",
+                "✔️ Tandai Dikuasai" if idx not in st.session_state.mastered_vocab else "âœ“ Sudah Dikuasai",
                 use_container_width=True,
             ):
                 st.session_state.mastered_vocab.add(idx)
                 st.session_state.selected_hanzi = None
-                st.rerun()
+                rerun_app()
         with btn3:
             if st.button("⬅ Kembali ke daftar", use_container_width=True):
                 st.session_state.selected_hanzi = None
-                st.rerun()
+                rerun_app()
 
 
 def kuis_view():
     st.markdown(
-        "<div class='glass-card'><h2 style='margin:0'>📝 Kuis Kosakata</h2><p style='margin-bottom:0'>Sekarang ada progress, streak, dan feedback yang lebih membantu saat salah.</p></div>",
+        "<div class='glass-card'><h2 style='margin:0'📝 Kuis Kosakata</h2><p style='margin-bottom:0'>Sekarang ada progress, streak, dan feedback yang lebih membantu saat salah.</p></div>",
         unsafe_allow_html=True,
     )
     render_top_dashboard()
@@ -533,7 +742,7 @@ def kuis_view():
         st.session_state.quiz_options = []
         st.session_state.quiz_answered = False
         st.session_state.quiz_feedback = None
-        st.rerun()
+        rerun_app()
 
     if total_vocab == 0:
         st.warning("Tidak ada data kosakata.")
@@ -584,7 +793,7 @@ def kuis_view():
 
     if st.button("🔊 Tampilkan Pinyin", key="quiz_pin"):
         st.session_state.quiz_show_pinyin = not st.session_state.quiz_show_pinyin
-        st.rerun()
+        rerun_app()
     if st.session_state.quiz_show_pinyin:
         st.markdown(
             f"<div style='text-align:center'><span class='pinyin-chip'>{st.session_state.current_pinyin}</span></div>",
@@ -610,7 +819,7 @@ def kuis_view():
                         st.session_state.wrong_quiz.add(question_idx)
                         st.session_state.quiz_feedback = "wrong"
                     update_streak(is_correct)
-                    st.rerun()
+                    rerun_app()
     else:
         if st.session_state.quiz_feedback == "correct":
             st.success("Benar. Kamu lagi enak ritmenya.")
@@ -625,7 +834,7 @@ def kuis_view():
             st.session_state.quiz_options = []
             st.session_state.quiz_answered = False
             st.session_state.quiz_feedback = None
-            st.rerun()
+            rerun_app()
     st.metric("Skor Kuis", st.session_state.score_quiz)
 
 
@@ -669,7 +878,7 @@ def cloze_view():
 
     if st.button("🔊 Tampilkan Pinyin Kalimat", key="clz_pin"):
         st.session_state.clz_show_pinyin = not st.session_state.clz_show_pinyin
-        st.rerun()
+        rerun_app()
     if st.session_state.clz_show_pinyin and st.session_state.pinyin_kal:
         st.caption(f"Pinyin: {st.session_state.pinyin_kal}")
 
@@ -692,7 +901,7 @@ def cloze_view():
                         st.session_state.wrong_cloze.add(question_idx)
                         st.session_state.clz_feedback = "wrong"
                     update_streak(is_correct)
-                    st.rerun()
+                    rerun_app()
     else:
         if st.session_state.clz_feedback == "correct":
             st.success("Tepat. Kalimatnya sudah kebaca dengan benar.")
@@ -707,7 +916,7 @@ def cloze_view():
             st.session_state.clz_options = []
             st.session_state.clz_answered = False
             st.session_state.clz_feedback = None
-            st.rerun()
+            rerun_app()
     st.metric("Skor Isi Kalimat", st.session_state.score_cloze)
 
 
@@ -750,7 +959,7 @@ def scramble_view():
                     if st.button(tok, key=f"sc_{question_idx}_{i}_{tok}", use_container_width=True):
                         st.session_state.sc_order.append(tok)
                         st.session_state.sc_tokens.pop(i)
-                        st.rerun()
+                        rerun_app()
         else:
             st.info("Semua kata sudah dipilih. Lanjut cek jawaban.")
 
@@ -763,7 +972,7 @@ def scramble_view():
                 st.session_state.sc_tokens = deepcopy(st.session_state.sc_original)
                 random.shuffle(st.session_state.sc_tokens)
                 st.session_state.sc_order = []
-                st.rerun()
+                rerun_app()
         with col_b:
             if st.button("✅ Cek Jawaban", use_container_width=True):
                 st.session_state.sc_answered = True
@@ -782,7 +991,7 @@ def scramble_view():
                     st.session_state.sc_feedback = "wrong"
                     st.session_state.wrong_scramble.add(question_idx)
                 update_streak(is_correct)
-                st.rerun()
+                rerun_app()
     else:
         if st.session_state.sc_feedback == "correct":
             st.success("Kalimat benar.")
@@ -803,7 +1012,7 @@ def scramble_view():
                 st.session_state.sc_order = []
                 st.session_state.sc_answered = False
                 st.session_state.sc_feedback = None
-                st.rerun()
+                rerun_app()
         with col_tryagain:
             if st.button("🔄 Coba lagi soal ini", use_container_width=True):
                 st.session_state.sc_tokens = deepcopy(st.session_state.sc_original)
@@ -811,9 +1020,14 @@ def scramble_view():
                 st.session_state.sc_order = []
                 st.session_state.sc_answered = False
                 st.session_state.sc_feedback = None
-                st.rerun()
+                rerun_app()
 
     st.metric("Skor Susun Kalimat", st.session_state.score_scramble)
+
+
+if not profile_is_complete():
+    render_profile_setup()
+    st.stop()
 
 
 if st.session_state.menu == "📇 Flashcard":
@@ -824,3 +1038,6 @@ elif st.session_state.menu == "✏️ Isi Kalimat":
     cloze_view()
 else:
     scramble_view()
+
+save_progress()
+
