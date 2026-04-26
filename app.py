@@ -6,6 +6,9 @@ from copy import deepcopy
 import jieba
 import pandas as pd
 import streamlit as st
+from gtts import gTTS
+import io
+import re
 
 native_rerun = st.rerun
 
@@ -177,6 +180,29 @@ if not st.session_state._progress_loaded:
     load_progress()
     st.session_state._progress_loaded = True
 
+@st.cache_data(show_spinner=False)
+def get_audio_bytes(text: str, lang: str = "zh") -> bytes:
+    if not text or not isinstance(text, str):
+        return b""
+    try:
+        clean = re.sub(r'_+', ' ', text)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        tts = gTTS(text=clean, lang=lang, slow=False)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        return fp.read()
+    except Exception:
+        return b""
+
+def render_speaker_button(text: str, key_suffix: str, lang: str = "zh"):
+    if st.button("🔊", key=f"speak_{key_suffix}", help="Dengarkan suara"):
+        audio_bytes = get_audio_bytes(text, lang)
+        if audio_bytes:
+            st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+        else:
+            st.warning("Tidak dapat menghasilkan suara.")
+
 def get_theme_css():
     if st.session_state.theme_mode == "Terang":
         return """
@@ -271,16 +297,6 @@ if load_error:
     st.error(load_error)
     st.stop()
 total_vocab = len(vocab)
-
-@st.cache_data
-def load_matching_data():
-    try:
-        matching_df = pd.read_excel(DATA_FILE, sheet_name="susun_jawaban1")
-        return matching_df.fillna("")
-    except Exception:
-        return None
-
-matching_df = load_matching_data()
 
 def total_score():
     return st.session_state.score_quiz + st.session_state.score_cloze + st.session_state.score_scramble
@@ -405,8 +421,8 @@ with st.sidebar:
             st.session_state.menu = label
             st.session_state.selected_hanzi = None
             rerun_app()
-    if st.button("📝 Susun Jawaban", key="menu_match", use_container_width=True):
-        st.session_state.menu = "Susun Jawaban"
+    if st.button("📝 Latihan H31003", key="menu_h31003", use_container_width=True):
+        st.session_state.menu = "H31003 Exam"
         st.session_state.selected_hanzi = None
         rerun_app()
     st.divider()
@@ -499,6 +515,12 @@ def flashcard_view():
         item = vocab.iloc[idx]
         example = item["Contoh"] if item["Contoh"] else "Belum ada contoh kalimat."
         st.markdown(f"""<div class="glass-card" style="text-align:center"><div class="hanzi-giant">{item['Kosakata']}</div><div><span class="pinyin-chip">{item['Pinyin']}</span></div><hr><p style="font-weight:700; margin:0">Arti</p><p>{item['Arti Indonesia']}</p><p style="font-weight:500">Contoh</p><p>{example}</p></div>""", unsafe_allow_html=True)
+        col_spk1, col_spk2 = st.columns([1,1])
+        with col_spk1:
+            render_speaker_button(item['Kosakata'], f"fc_hanzi_{idx}")
+        with col_spk2:
+            if example and example != "Belum ada contoh kalimat.":
+                render_speaker_button(example, f"fc_contoh_{idx}")
         btn1, btn2, btn3 = st.columns(3)
         with btn1:
             if st.button("⭐ Simpan Favorit" if idx not in st.session_state.favorites else "✅ Favorit Tersimpan", use_container_width=True):
@@ -559,9 +581,14 @@ def kuis_view():
         st.session_state.current_pinyin = item["Pinyin"]
         st.session_state.current_arti = item["Arti Indonesia"]
         st.session_state.current_contoh = item.get("Contoh","")
+        st.session_state.current_item = item
     st.progress((idx+1)/len(pool))
     st.caption(f"Soal {idx+1} dari {len(pool)} | Streak {st.session_state.current_streak}")
-    st.markdown(f"<div class='hanzi-giant'>{st.session_state.current_soal}</div>", unsafe_allow_html=True)
+    col_soal, col_spk = st.columns([4,1])
+    with col_soal:
+        st.markdown(f"<div class='hanzi-giant'>{st.session_state.current_soal}</div>", unsafe_allow_html=True)
+    with col_spk:
+        render_speaker_button(st.session_state.current_soal, f"quiz_soal_{question_idx}")
     if st.button("🔊 Tampilkan Pinyin", key="quiz_pin"):
         st.session_state.quiz_show_pinyin = not st.session_state.quiz_show_pinyin
         rerun_app()
@@ -571,33 +598,68 @@ def kuis_view():
         cols = st.columns(2)
         for i, opt in enumerate(st.session_state.quiz_options):
             with cols[i%2]:
-                if st.button(opt, key=f"quiz_{question_idx}_{i}", use_container_width=True):
-                    st.session_state.quiz_answered = True
-                    st.session_state.quiz_attempts += 1
-                    is_correct = opt == st.session_state.current_benar
-                    if is_correct:
-                        st.session_state.quiz_correct_attempts += 1
-                        if question_idx not in st.session_state.quiz_answered_set:
-                            st.session_state.score_quiz += 10
-                            st.session_state.quiz_answered_set.add(question_idx)
-                        st.session_state.wrong_quiz.discard(question_idx)
-                        st.session_state.quiz_feedback = "correct"
-                    else:
-                        st.session_state.wrong_quiz.add(question_idx)
-                        st.session_state.quiz_feedback = "wrong"
-                    update_streak(is_correct)
-                    rerun_app()
+                col_btn, col_opt_spk = st.columns([4,1])
+                with col_btn:
+                    if st.button(opt, key=f"quiz_{question_idx}_{i}", use_container_width=True):
+                        st.session_state.quiz_answered = True
+                        st.session_state.quiz_attempts += 1
+                        is_correct = opt == st.session_state.current_benar
+                        st.session_state.user_answer = opt
+                        if is_correct:
+                            st.session_state.quiz_correct_attempts += 1
+                            if question_idx not in st.session_state.quiz_answered_set:
+                                st.session_state.score_quiz += 10
+                                st.session_state.quiz_answered_set.add(question_idx)
+                            st.session_state.wrong_quiz.discard(question_idx)
+                            st.session_state.quiz_feedback = "correct"
+                        else:
+                            st.session_state.wrong_quiz.add(question_idx)
+                            st.session_state.quiz_feedback = "wrong"
+                        update_streak(is_correct)
+                        rerun_app()
+                with col_opt_spk:
+                    render_speaker_button(opt, f"quiz_opt_{question_idx}_{i}")
     else:
+        st.markdown("### 📋 Hasil Jawaban")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**📖 Soal**")
+            st.info(st.session_state.current_soal)
+            if st.session_state.current_pinyin:
+                st.markdown(f"**Pinyin soal**  \n`{st.session_state.current_pinyin}`")
+            st.markdown("**Jawaban Anda**")
+            user_ans = st.session_state.user_answer if hasattr(st.session_state, 'user_answer') else "-"
+            if st.session_state.quiz_feedback == "correct":
+                color = "green"
+            else:
+                color = "red"
+            st.markdown(f"<span style='color:{color}'>{user_ans}</span>", unsafe_allow_html=True)
+            if st.session_state.quiz_mode == "Arti → Hanzi" and user_ans != "-":
+                user_row = vocab[vocab["Kosakata"] == user_ans]
+                if not user_row.empty:
+                    st.markdown(f"**Pinyin jawaban Anda**  \n`{user_row.iloc[0]['Pinyin']}`")
+                    st.markdown(f"**Arti jawaban Anda**  \n{user_row.iloc[0]['Arti Indonesia']}")
+        with col2:
+            st.markdown("**✅ Jawaban Benar**")
+            st.success(st.session_state.current_benar)
+            if st.session_state.quiz_mode == "Hanzi → Arti":
+                st.markdown(f"**Arti jawaban**  \n{st.session_state.current_benar}")
+            else:
+                pinyin_benar = st.session_state.current_item.get("Pinyin", "")
+                if pinyin_benar:
+                    st.markdown(f"**Pinyin jawaban**  \n`{pinyin_benar}`")
+                st.markdown(f"**Arti jawaban**  \n{st.session_state.current_item.get('Arti Indonesia', '')}")
         if st.session_state.quiz_feedback == "correct":
-            st.success("Benar.")
+            st.success("✅ Benar! +10 poin")
         else:
-            st.error(f"Salah. Jawaban benar: {st.session_state.current_benar}")
-            st.markdown(f"<div class='hint-box'><strong>Pinyin:</strong> {st.session_state.current_pinyin}<br><strong>Arti:</strong> {st.session_state.current_arti}<br><strong>Contoh:</strong> {st.session_state.current_contoh or '-'}</div>", unsafe_allow_html=True)
+            st.error("❌ Salah. Pelajari lagi kosakatanya.")
         if st.button("➡️ Soal berikutnya", type="primary", use_container_width=True):
             st.session_state.quiz_idx = (idx + 1) % len(pool)
             st.session_state.quiz_options = []
             st.session_state.quiz_answered = False
             st.session_state.quiz_feedback = None
+            if 'user_answer' in st.session_state:
+                del st.session_state.user_answer
             rerun_app()
     st.metric("Skor Kuis", st.session_state.score_quiz)
 
@@ -626,7 +688,11 @@ def cloze_view():
         st.session_state.current_alasan = soal.get("alasan","")
     st.progress((idx+1)/len(pool))
     st.caption(f"Soal {idx+1} dari {len(pool)}")
-    st.markdown(f"<div class='glass-card'>{st.session_state.current_kalimat}</div>", unsafe_allow_html=True)
+    col_kal, col_spk = st.columns([4,1])
+    with col_kal:
+        st.markdown(f"<div class='glass-card'>{st.session_state.current_kalimat}</div>", unsafe_allow_html=True)
+    with col_spk:
+        render_speaker_button(st.session_state.current_kalimat, f"cloze_soal_{question_idx}")
     if st.button("🔊 Tampilkan Pinyin Kalimat", key="clz_pin"):
         st.session_state.clz_show_pinyin = not st.session_state.clz_show_pinyin
         rerun_app()
@@ -636,34 +702,56 @@ def cloze_view():
         cols = st.columns(2)
         for i, opt in enumerate(st.session_state.clz_options):
             with cols[i%2]:
-                if st.button(opt, key=f"clz_{question_idx}_{i}", use_container_width=True):
-                    st.session_state.clz_answered = True
-                    st.session_state.cloze_attempts += 1
-                    is_correct = opt == st.session_state.current_benar_cloze
-                    if is_correct:
-                        st.session_state.cloze_correct_attempts += 1
-                        if question_idx not in st.session_state.cloze_answered_set:
-                            st.session_state.score_cloze += 10
-                            st.session_state.cloze_answered_set.add(question_idx)
-                        st.session_state.wrong_cloze.discard(question_idx)
-                        st.session_state.clz_feedback = "correct"
-                    else:
-                        st.session_state.wrong_cloze.add(question_idx)
-                        st.session_state.clz_feedback = "wrong"
-                    update_streak(is_correct)
-                    rerun_app()
+                col_btn, col_opt_spk = st.columns([4,1])
+                with col_btn:
+                    if st.button(opt, key=f"clz_{question_idx}_{i}", use_container_width=True):
+                        st.session_state.clz_answered = True
+                        st.session_state.cloze_attempts += 1
+                        is_correct = opt == st.session_state.current_benar_cloze
+                        st.session_state.user_answer = opt
+                        if is_correct:
+                            st.session_state.cloze_correct_attempts += 1
+                            if question_idx not in st.session_state.cloze_answered_set:
+                                st.session_state.score_cloze += 10
+                                st.session_state.cloze_answered_set.add(question_idx)
+                            st.session_state.wrong_cloze.discard(question_idx)
+                            st.session_state.clz_feedback = "correct"
+                        else:
+                            st.session_state.wrong_cloze.add(question_idx)
+                            st.session_state.clz_feedback = "wrong"
+                        update_streak(is_correct)
+                        rerun_app()
+                with col_opt_spk:
+                    render_speaker_button(opt, f"cloze_opt_{question_idx}_{i}")
     else:
-        if st.session_state.clz_feedback == "correct":
-            st.success("Tepat!")
-        else:
-            st.error(f"Jawaban benar: {st.session_state.current_benar_cloze}")
+        st.markdown("### 📋 Hasil Jawaban")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**📝 Kalimat soal**")
+            st.info(st.session_state.current_kalimat)
+            st.markdown("**Jawaban Anda**")
+            user_ans = st.session_state.user_answer if hasattr(st.session_state, 'user_answer') else "-"
+            if st.session_state.clz_feedback == "correct":
+                color = "green"
+            else:
+                color = "red"
+            st.markdown(f"<span style='color:{color}'>{user_ans}</span>", unsafe_allow_html=True)
+        with col2:
+            st.markdown("**✅ Jawaban Benar**")
+            st.success(st.session_state.current_benar_cloze)
             if st.session_state.current_alasan:
-                st.info(f"📖 Penjelasan: {st.session_state.current_alasan}")
+                st.markdown(f"**📖 Penjelasan**  \n{st.session_state.current_alasan}")
+        if st.session_state.clz_feedback == "correct":
+            st.success("✅ Tepat! +10 poin")
+        else:
+            st.error("❌ Salah. Perhatikan konteks kalimat.")
         if st.button("📌 Soal berikutnya", use_container_width=True):
             st.session_state.clz_idx = (idx+1) % len(pool)
             st.session_state.clz_options = []
             st.session_state.clz_answered = False
             st.session_state.clz_feedback = None
+            if 'user_answer' in st.session_state:
+                del st.session_state.user_answer
             rerun_app()
     st.metric("Skor Isi Kalimat", st.session_state.score_cloze)
 
@@ -690,20 +778,28 @@ def scramble_view():
         st.session_state.current_pola = scramble.iloc[question_idx].get("pola","")
     st.progress((idx+1)/len(pool))
     st.caption(f"Soal {idx+1} dari {len(pool)}")
-    st.markdown("**Susun kata-kata di bawah menjadi kalimat yang benar**")
+    col_info, col_spk = st.columns([4,1])
+    with col_info:
+        st.markdown("**🔀 Susun kata-kata menjadi kalimat yang benar:**")
+    with col_spk:
+        render_speaker_button(original_text, f"scramble_soal_{question_idx}")
     if not st.session_state.sc_answered:
         if st.session_state.sc_tokens:
             cols = st.columns(min(4, len(st.session_state.sc_tokens)))
             for i, tok in enumerate(st.session_state.sc_tokens):
                 with cols[i%len(cols)]:
-                    if st.button(tok, key=f"sc_{question_idx}_{i}_{tok}", use_container_width=True):
-                        st.session_state.sc_order.append(tok)
-                        st.session_state.sc_tokens.pop(i)
-                        rerun_app()
+                    col_tok, col_tok_spk = st.columns([4,1])
+                    with col_tok:
+                        if st.button(tok, key=f"sc_{question_idx}_{i}_{tok}", use_container_width=True):
+                            st.session_state.sc_order.append(tok)
+                            st.session_state.sc_tokens.pop(i)
+                            rerun_app()
+                    with col_tok_spk:
+                        render_speaker_button(tok, f"sc_tok_{question_idx}_{i}")
         else:
-            st.info("Semua kata sudah dipilih. Klik 'Cek Jawaban'.")
+            st.info("✅ Semua kata sudah dipilih. Klik 'Cek Jawaban'.")
         if st.session_state.sc_order:
-            st.markdown("**Urutan Anda:** " + " ".join(st.session_state.sc_order))
+            st.markdown("**📝 Urutan Anda:** " + " ".join(st.session_state.sc_order))
         col_a, col_b = st.columns(2)
         with col_a:
             if st.button("🔄 Reset", use_container_width=True):
@@ -718,6 +814,7 @@ def scramble_view():
                 joined_answer = "".join(st.session_state.sc_order).replace(" ","")
                 joined_original = "".join(st.session_state.sc_original).replace(" ","")
                 is_correct = joined_answer == joined_original
+                st.session_state.user_answer = " ".join(st.session_state.sc_order) if st.session_state.sc_order else "(kosong)"
                 if is_correct:
                     st.session_state.scramble_correct_attempts += 1
                     st.session_state.sc_feedback = "correct"
@@ -731,12 +828,27 @@ def scramble_view():
                 update_streak(is_correct)
                 rerun_app()
     else:
-        if st.session_state.sc_feedback == "correct":
-            st.success("Kalimat benar.")
-        else:
-            st.error(f"Urutan yang benar: {' '.join(st.session_state.sc_original)}")
+        st.markdown("### 📋 Hasil Jawaban")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**📝 Kalimat asli (soal)**")
+            st.info(' '.join(st.session_state.sc_original))
+            st.markdown("**Urutan Anda**")
+            user_ans = st.session_state.user_answer if hasattr(st.session_state, 'user_answer') else "-"
+            if st.session_state.sc_feedback == "correct":
+                color = "green"
+            else:
+                color = "red"
+            st.markdown(f"<span style='color:{color}'>{user_ans}</span>", unsafe_allow_html=True)
+        with col2:
+            st.markdown("**✅ Urutan Benar**")
+            st.success(' '.join(st.session_state.sc_original))
             if st.session_state.current_pola:
-                st.info(f"📖 Pola grammar: {st.session_state.current_pola}")
+                st.markdown(f"**📖 Pola grammar**  \n{st.session_state.current_pola}")
+        if st.session_state.sc_feedback == "correct":
+            st.success("✅ Kalimat benar! +10 poin")
+        else:
+            st.error("❌ Urutan salah. Perhatikan pola kalimat.")
         col_next, col_tryagain = st.columns(2)
         with col_next:
             if st.button("➡️ Soal berikutnya", type="primary", use_container_width=True):
@@ -746,6 +858,8 @@ def scramble_view():
                 st.session_state.sc_order = []
                 st.session_state.sc_answered = False
                 st.session_state.sc_feedback = None
+                if 'user_answer' in st.session_state:
+                    del st.session_state.user_answer
                 rerun_app()
         with col_tryagain:
             if st.button("🔄 Coba lagi soal ini", use_container_width=True):
@@ -757,146 +871,445 @@ def scramble_view():
                 rerun_app()
     st.metric("Skor Susun Kalimat", st.session_state.score_scramble)
 
-def matching_view():
-    st.markdown(
-        "<div class='glass-card'><h2 style='margin:0'>📝 Susun Jawaban</h2><p style='margin-bottom:0'>Pasangkan soal dengan jawaban yang tepat. Klik tombol pinyin untuk melihat bacaan.</p></div>",
-        unsafe_allow_html=True,
-    )
-    render_top_dashboard()
 
-    if matching_df is None or matching_df.empty:
-        st.warning("Data 'susun_jawaban1' tidak ditemukan. Periksa file Excel.")
+# ==================== LOAD DATA H31003 ====================
+@st.cache_data
+def load_h31003_data():
+    """Memuat semua sheet dari file h31003.xlsx"""
+    try:
+        h31003_file = os.path.join(APP_DIR, "h31003.xlsx")
+        if not os.path.exists(h31003_file):
+            return None
+        df_match = pd.read_excel(h31003_file, sheet_name="H31003_reading_41_50")
+        df_fillword = pd.read_excel(h31003_file, sheet_name="H31003_reading_51_60")
+        df_mc = pd.read_excel(h31003_file, sheet_name="H31003_reading_61_70")
+        df_char = pd.read_excel(h31003_file, sheet_name="H31003_writing_71_75")
+        df_scramble = pd.read_excel(h31003_file, sheet_name="H31003_writing_76_80")
+        df_listening = pd.read_excel(h31003_file, sheet_name="H31003_listening_1_10")
+        return df_match, df_fillword, df_mc, df_char, df_scramble, df_listening
+    except Exception as e:
+        st.error(f"Gagal memuat data H31003: {e}")
+        return None
+
+# ==================== LATIHAN SOAL H31003 ====================
+def h31003_exam():
+    st.markdown("<div class='glass-card'><h2>📝 Latihan Soal HSK 3 (H31003)</h2><p>Kerjakan semua soal secara berurutan. Setiap halaman berisi 5 soal. Skor akan dihitung setelah selesai.</p></div>", unsafe_allow_html=True)
+
+    data = load_h31003_data()
+    if data is None:
+        st.warning("File h31003.xlsx tidak ditemukan. Pastikan file ada di folder yang sama.")
         return
 
-    kode_list = matching_df["kode"].unique()
-    selected_kode = st.radio("Pilih paket soal", kode_list, horizontal=True)
+    df_match, df_fillword, df_mc, df_char, df_scramble, df_listening = data
 
-    data = matching_df[matching_df["kode"] == selected_kode].copy()
-    if len(data) == 0:
-        st.warning(f"Tidak ada data untuk kode {selected_kode}")
-        return
+    # ========== Membangun daftar semua soal ==========
+    all_questions = []
 
-    key_prefix = f"matching_{selected_kode}"
-    n_soal = len(data)
+    # LISTENING
+    for _, row in df_listening.iterrows():
+        all_questions.append({
+            "type": "listening",
+            "id": row['no'],
+            "part": 1,
+            "audio_text": row['dialog'],
+            "options": ['A', 'B', 'C', 'E', 'F'],
+            "correct": str(row['correct']).strip().upper(),
+            "image_path": str(row.get('image_path', '')).strip(),
+        })
 
-    # Reset state jika kode berubah
-    if "last_matching_kode" not in st.session_state:
-        st.session_state.last_matching_kode = selected_kode
-    if st.session_state.last_matching_kode != selected_kode:
-        for k in list(st.session_state.keys()):
-            if k.startswith("matching_") or k.startswith("match_") or k.startswith("show_pinyin_"):
-                st.session_state.pop(k, None)
-        st.session_state.last_matching_kode = selected_kode
+    # MATCHING (41-50)
+    for _, row in df_match.iterrows():
+        all_questions.append({
+            "type": "matching",
+            "soal": str(row.get("soal", "")),
+            "jawaban_benar": str(row.get("jawaban", "")),
+            "arti_soal": str(row.get("arti1", "")),
+            "pinyin_soal": str(row.get("pinyin1", "")),
+            "arti_jawaban": str(row.get("arti2", "")),
+            "pinyin_jawaban": str(row.get("pinyin2", "")),
+        })
 
-    # Inisialisasi state
-    if f"{key_prefix}_answers" not in st.session_state:
-        st.session_state[f"{key_prefix}_answers"] = [None] * n_soal
-        st.session_state[f"{key_prefix}_submitted"] = False
-        st.session_state[f"{key_prefix}_shuffle_order"] = None
+    # FILLWORD (51-60)
+    for _, row in df_fillword.iterrows():
+        all_questions.append({
+            "type": "fillword",
+            "soal": str(row.get("soal", "")),
+            "jawaban_benar": str(row.get("jawaban", "")),
+            "arti_soal": str(row.get("arti", "")),
+            "pinyin_soal": str(row.get("pinyin1", "")),
+        })
+
+    # PILIHAN GANDA (61-70)
+    for _, row in df_mc.iterrows():
+        all_questions.append({
+            "type": "mc",
+            "soal": str(row.get("soal", "")),
+            "jawaban_benar": str(row.get("jawaban", "")),
+            "opsi_A": str(row.get("opsi_A", "")),
+            "opsi_B": str(row.get("opsi_B", "")),
+            "opsi_C": str(row.get("opsi_C", "")),
+            "pinyin_soal": str(row.get("pinyin_soal", "")),
+            "arti_soal": str(row.get("arti_soal", "")),
+            "pilihan": {
+                "A": {"teks": str(row.get("opsi_A", "")), "pinyin": str(row.get("pinyin_A", "")), "arti": str(row.get("arti_A", ""))},
+                "B": {"teks": str(row.get("opsi_B", "")), "pinyin": str(row.get("pinyin_B", "")), "arti": str(row.get("arti_B", ""))},
+                "C": {"teks": str(row.get("opsi_C", "")), "pinyin": str(row.get("pinyin_C", "")), "arti": str(row.get("arti_C", ""))},
+            }
+        })
+
+    # ISIAN HURUF (71-75)
+    for _, row in df_char.iterrows():
+        all_questions.append({
+            "type": "char",
+            "soal": str(row.get("soal", "")),
+            "jawaban_benar": str(row.get("jawaban", "")),
+            "arti_soal": str(row.get("arti", "")),
+            "pinyin_soal": str(row.get("pinyin", "")),
+        })
+
+    # SUSUN KALIMAT (76-80)
+    for _, row in df_scramble.iterrows():
+        kalimat = str(row.get("soal", ""))
+        tokens = [t for t in jieba.cut(kalimat) if t.strip()]
+        all_questions.append({
+            "type": "scramble",
+            "soal": kalimat,
+            "soal_asli": kalimat,
+            "tokens": tokens,
+            "jawaban_benar": "".join(tokens).replace(" ", ""),
+            "arti_soal": str(row.get("arti", "")),
+            "pinyin_soal": str(row.get("pinyin", "")),
+        })
+
+    total_soal = len(all_questions)
+    per_page = 5
+    total_pages = (total_soal - 1) // per_page + 1
+
+    # ========== INISIALISASI SESSION STATE ==========
+    if 'h31003_answers' not in st.session_state:
+        st.session_state.h31003_answers = [None] * total_soal
     else:
-        if len(st.session_state[f"{key_prefix}_answers"]) != n_soal:
-            st.session_state[f"{key_prefix}_answers"] = [None] * n_soal
-            st.session_state[f"{key_prefix}_submitted"] = False
-            st.session_state[f"{key_prefix}_shuffle_order"] = None
+        if len(st.session_state.h31003_answers) != total_soal:
+            st.session_state.h31003_answers = [None] * total_soal
 
-    # Acak urutan jawaban sekali per paket
-    if st.session_state[f"{key_prefix}_shuffle_order"] is None:
-        jawaban_list = data["jawaban"].tolist()
-        random.shuffle(jawaban_list)
-        st.session_state[f"{key_prefix}_shuffle_order"] = jawaban_list
+    if 'h31003_page' not in st.session_state:
+        st.session_state.h31003_page = 0
+    if 'h31003_reviewed' not in st.session_state:
+        st.session_state.h31003_reviewed = [False] * total_pages
+    if 'h31003_finished' not in st.session_state:
+        st.session_state.h31003_finished = False
+    if 'h31003_score' not in st.session_state:
+        st.session_state.h31003_score = 0
+    if 'h31003_match_shuffle' not in st.session_state:
+        st.session_state.h31003_match_shuffle = {}
 
-    shuffled_jawaban = st.session_state[f"{key_prefix}_shuffle_order"]
-
-    # Buat mapping jawaban -> arti
-    jawaban_to_arti = dict(zip(data["jawaban"], data["arti2"]))
-
-    # Tampilkan dropdown untuk setiap soal
-    for idx in range(n_soal):
-        row = data.iloc[idx]
-        soal = row["soal"]
-        pinyin_soal = row.get("pinyin1", "")
-        with st.expander(f"Soal {idx+1}: {soal}"):
-            pinyin_key = f"show_pinyin_{selected_kode}_{idx}"
-            if st.button(f"🔊 Tampilkan Pinyin {idx+1}", key=f"pinyin_btn_{selected_kode}_{idx}"):
-                st.session_state[pinyin_key] = not st.session_state.get(pinyin_key, False)
-            if st.session_state.get(pinyin_key, False):
-                st.caption(f"📖 Pinyin: {pinyin_soal}")
-
-            if st.session_state[f"{key_prefix}_submitted"] and st.session_state[f"{key_prefix}_answers"][idx] != row["jawaban"]:
-                st.info(f"💡 Arti soal: {row.get('arti1', '')}")
-
-        current_ans = st.session_state[f"{key_prefix}_answers"][idx]
-        default_idx = None
-        if current_ans in shuffled_jawaban:
-            default_idx = shuffled_jawaban.index(current_ans)
-        st.session_state[f"{key_prefix}_answers"][idx] = st.selectbox(
-            f"Pilih jawaban untuk soal {idx+1}",
-            options=shuffled_jawaban,
-            index=default_idx,
-            key=f"match_{selected_kode}_{idx}",
-            label_visibility="collapsed"
-        )
-
-    # Tombol Cek Jawaban
-    if st.button("✅ Cek Jawaban", key=f"check_{selected_kode}", use_container_width=True):
-        st.session_state[f"{key_prefix}_submitted"] = True
+    # ========== TOMBOL RESET ==========
+    if st.button("🔄 Reset Latihan H31003", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            if (key.startswith("h31003_") or
+                key.startswith("scramble_tokens_") or
+                key.startswith("scramble_order_") or
+                key.startswith("show_pinyin_h31003_") or
+                key.startswith("match_shuffle_") or
+                key.startswith("fillword_options_")):
+                st.session_state.pop(key, None)
         st.rerun()
 
-    # ========== TAMPILKAN REVIEW JIKA SUDAH DISUBMIT ==========
-    if st.session_state.get(f"{key_prefix}_submitted", False):
-        all_correct = True
-        results = []
-        for idx in range(n_soal):
-            row = data.iloc[idx]
-            user_ans = st.session_state[f"{key_prefix}_answers"][idx]
-            correct_ans = row["jawaban"]
-            arti_soal = row.get("arti1", "")
-            arti_user = jawaban_to_arti.get(user_ans, "") if user_ans else ""
-            arti_benar = row.get("arti2", "")
-            is_correct = (user_ans == correct_ans)
-            if not is_correct:
-                all_correct = False
-            results.append({
-                "no": idx+1,
-                "soal": row["soal"],
-                "arti_soal": arti_soal,
-                "jawaban_user": user_ans if user_ans is not None else "(belum dipilih)",
-                "arti_user": arti_user,
-                "jawaban_benar": correct_ans,
-                "arti_benar": arti_benar,
-                "status": "✅" if is_correct else "❌"
+    current_page = st.session_state.h31003_page
+    if current_page >= total_pages:
+        st.session_state.h31003_finished = True
+
+    # ========== SELESAI (FINISH) ==========
+    if st.session_state.h31003_finished:
+        correct = 0
+        for i, ans in enumerate(st.session_state.h31003_answers):
+            if ans is not None and ans == all_questions[i]["jawaban_benar"]:
+                correct += 1
+        st.session_state.h31003_score = correct
+        st.balloons()
+        st.success(f"✨ Latihan selesai! Skor Anda: {correct} dari {total_soal} ({correct/total_soal*100:.1f}%)")
+        if st.button("Kerjakan Ulang", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                if (key.startswith("h31003_") or
+                    key.startswith("scramble_tokens_") or
+                    key.startswith("scramble_order_") or
+                    key.startswith("show_pinyin_h31003_") or
+                    key.startswith("match_shuffle_") or
+                    key.startswith("fillword_options_")):
+                    st.session_state.pop(key, None)
+            st.rerun()
+        return
+
+    # ========== TENTUKAN HALAMAN SAAT INI ==========
+    start = current_page * per_page
+    end = min(start + per_page, total_soal)
+    page_soal = all_questions[start:end]
+
+    st.markdown(f"### Halaman {current_page+1} dari {total_pages}")
+    st.progress((current_page) / total_pages)
+
+    # ========== TAMPILKAN GAMBAR LISTENING (jika ada) ==========
+    listening_items = []
+    for q in page_soal:
+        if q["type"] == "listening" and q.get("image_path") and os.path.exists(q["image_path"]):
+            listening_items.append({
+                "image_path": q["image_path"],
+                "options": q.get("options", ['A', 'B', 'C', 'E', 'F'])
             })
 
-        if all_correct:
-            st.success("🎉 Semua jawaban tepat! Selamat.")
-        else:
-            st.error("❌ Masih ada jawaban yang salah. Perbaiki yang ditandai.")
+    if listening_items:
+        st.markdown("### 🖼️ Gambar untuk Soal Listening")
+        cols = st.columns(min(len(listening_items), 5))
+        for i, item in enumerate(listening_items):
+            with cols[i % 5]:
+                st.image(item["image_path"], use_container_width=True)
+                # Hanya tampilkan satu huruf dari nama file (opsional)
+                fname = os.path.basename(item["image_path"])
+                match = re.search(r'_([A-F])\.(jpg|png|jpeg|webp)$', fname, re.IGNORECASE)
+                label_huruf = match.group(1) if match else "?"
+                st.markdown(f"<div style='text-align:center; font-size:0.9rem; margin-top:5px;'><strong>{label_huruf}</strong></div>", unsafe_allow_html=True)
+        st.markdown("---")
 
-        st.markdown("### 📋 Review Jawaban")
-        for res in results:
-            st.markdown(f"**{res['no']}. {res['soal']}** {res['status']}")
-            st.markdown(f"  📖 Arti soal: {res['arti_soal']}")
-            st.markdown(f"- Jawaban Anda: `{res['jawaban_user']}`")
-            if res['arti_user']:
-                st.markdown(f"  - Arti: {res['arti_user']}")
-            st.markdown(f"- Jawaban benar: `{res['jawaban_benar']}`")
-            st.markdown(f"  - Arti: {res['arti_benar']}")
-            st.markdown("---")
+    # ========== PERSIAPAN DATA UNTUK FILLWORD & MATCHING ==========
+    all_fill_words = list(set([q["jawaban_benar"] for q in all_questions if q["type"] == "fillword"]))
+    if not all_fill_words and any(q["type"] == "fillword" for q in page_soal):
+        st.error("Data untuk soal fillword (51-60) kosong. Periksa file h31003.xlsx.")
+        return
 
-        # Tombol untuk kembali mengedit
-        if st.button("✏️ Perbaiki Jawaban", key=f"fix_{selected_kode}", use_container_width=True):
-            st.session_state[f"{key_prefix}_submitted"] = False
+    match_answers_in_page = [q["jawaban_benar"] for q in page_soal if q["type"] == "matching"]
+    if match_answers_in_page:
+        shuffle_key = f"match_shuffle_{current_page}"
+        if shuffle_key not in st.session_state.h31003_match_shuffle:
+            shuffled = match_answers_in_page.copy()
+            random.shuffle(shuffled)
+            st.session_state.h31003_match_shuffle[shuffle_key] = shuffled
+        shuffled_match_answers = st.session_state.h31003_match_shuffle[shuffle_key]
+    else:
+        shuffled_match_answers = []
+
+    # ========== TAMPILKAN SOAL ATAU REVIEW ==========
+    if not st.session_state.h31003_reviewed[current_page]:
+        # ========== LOOP SOAL ==========
+        for idx, q in enumerate(page_soal):
+            global_idx = start + idx
+            with st.container():
+                if q["type"] == "listening":
+                    st.markdown(f"**Soal {global_idx+1}** (Bagian {q['part']})")
+                    if st.button(f"🔊 Dengarkan Soal {global_idx+1}", key=f"listen_audio_{global_idx}"):
+                        audio_bytes = get_audio_bytes(q['audio_text'], lang='zh')
+                        if audio_bytes:
+                            st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+                        else:
+                            st.warning("Gagal memutar audio.")
+                    current_ans = st.session_state.h31003_answers[global_idx]
+                    options = q['options']
+                    if current_ans is None:
+                        default_idx = 0
+                    else:
+                        try:
+                            default_idx = options.index(current_ans)
+                        except ValueError:
+                            default_idx = 0
+                    selected = st.selectbox(
+                        "Pilih jawaban",
+                        options,
+                        index=default_idx,
+                        key=f"listening_dropdown_{global_idx}",
+                        label_visibility="collapsed"
+                    )
+                    st.session_state.h31003_answers[global_idx] = selected
+                    st.divider()
+
+                elif q["type"] == "matching":
+                    col_q, col_spk = st.columns([4, 1])
+                    with col_q:
+                        st.markdown(f"**Soal {global_idx+1}.** {q['soal']}")
+                    with col_spk:
+                        render_speaker_button(q['soal'], f"h31003_soal_{global_idx}")
+                    pinyin_key = f"show_pinyin_h31003_{global_idx}"
+                    if pinyin_key not in st.session_state:
+                        st.session_state[pinyin_key] = False
+                    if st.button("🔊 Lihat Pinyin", key=f"pinyin_btn_{global_idx}"):
+                        st.session_state[pinyin_key] = not st.session_state[pinyin_key]
+                        st.rerun()
+                    if st.session_state[pinyin_key] and q.get("pinyin_soal"):
+                        st.caption(f"Pinyin: {q['pinyin_soal']}")
+                    current_ans = st.session_state.h31003_answers[global_idx]
+                    default_idx = shuffled_match_answers.index(current_ans) if current_ans in shuffled_match_answers else 0
+                    st.session_state.h31003_answers[global_idx] = st.selectbox(
+                        f"Pilih jawaban untuk soal {global_idx+1}",
+                        shuffled_match_answers,
+                        index=default_idx,
+                        key=f"h31003_match_{global_idx}",
+                        label_visibility="collapsed"
+                    )
+                    st.divider()
+
+                elif q["type"] == "fillword":
+                    st.markdown(f"**Soal {global_idx+1}.** {q['soal']}")
+                    correct_ans = q["jawaban_benar"]
+                    other_words = [w for w in all_fill_words if w != correct_ans]
+                    if len(other_words) >= 4:
+                        distractor = random.sample(other_words, 4)
+                    else:
+                        distractor = other_words + ["(Tidak ada)"] * (4 - len(other_words))
+                    pilihan_fill = [correct_ans] + distractor
+                    random.shuffle(pilihan_fill)
+                    fill_key = f"fillword_options_{global_idx}"
+                    if fill_key not in st.session_state:
+                        st.session_state[fill_key] = pilihan_fill
+                    current_ans = st.session_state.h31003_answers[global_idx]
+                    default_idx = st.session_state[fill_key].index(current_ans) if current_ans in st.session_state[fill_key] else 0
+                    st.session_state.h31003_answers[global_idx] = st.selectbox(
+                        f"Pilih kata yang tepat untuk soal {global_idx+1}",
+                        st.session_state[fill_key],
+                        index=default_idx,
+                        key=f"h31003_fillword_{global_idx}",
+                        label_visibility="collapsed"
+                    )
+                    st.divider()
+
+                elif q["type"] == "mc":
+                    st.markdown(f"**Soal {global_idx+1}.** {q['soal']}")
+                    pilihan_teks = [q["opsi_A"], q["opsi_B"], q["opsi_C"]]
+                    current_ans = st.session_state.h31003_answers[global_idx]
+                    default_idx = pilihan_teks.index(current_ans) if current_ans in pilihan_teks else 0
+                    st.session_state.h31003_answers[global_idx] = st.radio(
+                        f"Pilih jawaban untuk soal {global_idx+1}",
+                        pilihan_teks,
+                        index=default_idx,
+                        key=f"h31003_mc_{global_idx}",
+                        label_visibility="collapsed"
+                    )
+                    st.divider()
+
+                elif q["type"] == "char":
+                    st.markdown(f"**Soal {global_idx+1}.** {q['soal']}")
+                    current_ans = st.session_state.h31003_answers[global_idx] or ""
+                    st.session_state.h31003_answers[global_idx] = st.text_input(
+                        f"Masukkan satu huruf (Hanzi) untuk soal {global_idx+1}",
+                        value=current_ans,
+                        key=f"h31003_char_{global_idx}",
+                        label_visibility="collapsed"
+                    )
+                    st.divider()
+
+                elif q["type"] == "scramble":
+                    token_key = f"scramble_tokens_{global_idx}"
+                    order_key = f"scramble_order_{global_idx}"
+                    if token_key not in st.session_state:
+                        st.session_state[token_key] = deepcopy(q["tokens"])
+                        random.shuffle(st.session_state[token_key])
+                        st.session_state[order_key] = []
+                    st.markdown(f"**Soal {global_idx+1}. Susun kalimat:**")
+                    st.markdown("🔀 **Klik kata-kata di bawah untuk menyusun kalimat yang benar.**")
+                    if st.session_state[token_key]:
+                        cols = st.columns(min(4, len(st.session_state[token_key])))
+                        for j, tok in enumerate(st.session_state[token_key]):
+                            with cols[j % len(cols)]:
+                                col_tok, col_tok_spk = st.columns([4, 1])
+                                with col_tok:
+                                    if st.button(tok, key=f"scramble_btn_{global_idx}_{j}"):
+                                        st.session_state[order_key].append(tok)
+                                        st.session_state[token_key].pop(j)
+                                        st.rerun()
+                                with col_tok_spk:
+                                    render_speaker_button(tok, f"scramble_tok_{global_idx}_{j}")
+                    else:
+                        st.info("✅ Semua kata sudah dipilih.")
+                    if st.session_state[order_key]:
+                        st.markdown("**📝 Urutan Anda:** " + " ".join(st.session_state[order_key]))
+                    col_reset, col_cek = st.columns(2)
+                    with col_reset:
+                        if st.button("🔄 Reset", key=f"reset_scramble_{global_idx}"):
+                            st.session_state[token_key] = deepcopy(q["tokens"])
+                            random.shuffle(st.session_state[token_key])
+                            st.session_state[order_key] = []
+                            st.rerun()
+                    with col_cek:
+                        if st.button("✅ Cek Jawaban", key=f"check_scramble_{global_idx}"):
+                            user_answer = "".join(st.session_state[order_key]).replace(" ", "")
+                            correct_answer = q["jawaban_benar"]
+                            is_correct = (user_answer == correct_answer)
+                            st.session_state.h31003_answers[global_idx] = user_answer if is_correct else None
+                            st.session_state[f"scramble_feedback_{global_idx}"] = is_correct
+                            st.rerun()
+                    feedback_key = f"scramble_feedback_{global_idx}"
+                    if feedback_key in st.session_state:
+                        if st.session_state[feedback_key]:
+                            st.success("✅ Susunan benar!")
+                        else:
+                            st.error(f"❌ Susunan salah. Kalimat yang benar: {q['soal_asli']}")
+                    st.divider()
+
+                else:
+                    st.markdown(f"**Soal {global_idx+1}.** {q.get('soal', 'Soal tidak dikenal')}")
+                    st.divider()
+
+        if st.button("✅ Cek Jawaban (Halaman Ini)", key=f"check_{current_page}", use_container_width=True):
+            st.session_state.h31003_reviewed[current_page] = True
             st.rerun()
 
-    # Tombol Reset
-    if st.button("🔄 Reset jawaban", key=f"reset_{selected_kode}", use_container_width=True):
-        for key in list(st.session_state.keys()):
-            if key.startswith(f"match_{selected_kode}_") or key.startswith(f"show_pinyin_{selected_kode}_"):
-                st.session_state.pop(key, None)
-        st.session_state[f"{key_prefix}_answers"] = [None] * n_soal
-        st.session_state[f"{key_prefix}_submitted"] = False
-        st.session_state[f"{key_prefix}_shuffle_order"] = None
-        st.rerun()
+    else:
+        # ========== REVIEW MODE ==========
+        st.subheader("📋 Review Jawaban Halaman Ini")
+        for idx, q in enumerate(page_soal):
+            global_idx = start + idx
+            user_ans = st.session_state.h31003_answers[global_idx]
+            correct_ans = q.get("jawaban_benar", q.get("correct"))
+            is_correct = (user_ans == correct_ans)
+
+            if q["type"] == "listening":
+                st.markdown(f"**{global_idx+1}. (Listening)** {'✅' if is_correct else '❌'}")
+                if q.get("image_path") and os.path.exists(q["image_path"]):
+                    st.image(q["image_path"], width=200)
+                st.markdown(f"- Jawaban Anda: `{user_ans}`")
+                st.markdown(f"- Jawaban benar: `{correct_ans}`")
+            elif q["type"] == "matching":
+                st.markdown(f"**{global_idx+1}. {q['soal']}** {'✅' if is_correct else '❌'}")
+                st.markdown(f"- Jawaban Anda: `{user_ans}`")
+                st.markdown(f"- Jawaban benar: `{correct_ans}`")
+                if q.get("arti_jawaban"):
+                    st.markdown(f"- Arti jawaban: {q['arti_jawaban']}")
+                if q.get("arti_soal"):
+                    st.markdown(f"- Arti soal: {q['arti_soal']}")
+            elif q["type"] == "fillword":
+                st.markdown(f"**{global_idx+1}. {q['soal']}** {'✅' if is_correct else '❌'}")
+                st.markdown(f"- Jawaban Anda: `{user_ans}`")
+                st.markdown(f"- Jawaban benar: `{correct_ans}`")
+            elif q["type"] == "mc":
+                st.markdown(f"**{global_idx+1}. {q['soal']}** {'✅' if is_correct else '❌'}")
+                st.markdown(f"- Jawaban Anda: `{user_ans}`")
+                st.markdown(f"- Jawaban benar: `{correct_ans}`")
+                for opt in ["A", "B", "C"]:
+                    if q["pilihan"][opt]["teks"] == correct_ans:
+                        if q["pilihan"][opt]["pinyin"]:
+                            st.markdown(f"  - Pinyin: `{q['pilihan'][opt]['pinyin']}`")
+                        if q["pilihan"][opt]["arti"]:
+                            st.markdown(f"  - Arti: {q['pilihan'][opt]['arti']}")
+                        break
+            elif q["type"] == "char":
+                st.markdown(f"**{global_idx+1}. {q['soal']}** {'✅' if is_correct else '❌'}")
+                st.markdown(f"- Jawaban Anda: `{user_ans}`")
+                st.markdown(f"- Jawaban benar: `{correct_ans}`")
+            elif q["type"] == "scramble":
+                st.markdown(f"**{global_idx+1}. Susun kalimat** {'✅' if is_correct else '❌'}")
+                user_display = user_ans if user_ans else "(belum selesai)"
+                st.markdown(f"- Jawaban Anda: `{user_display}`")
+                st.markdown(f"- Kalimat benar: `{q['soal_asli']}`")
+                if q.get("arti_soal"):
+                    st.markdown(f"- Arti: {q['arti_soal']}")
+
+            st.markdown("---")
+
+        if st.button("➡️ Lanjut ke Halaman Berikutnya", key=f"next_{current_page}", use_container_width=True):
+            if current_page + 1 < total_pages:
+                st.session_state.h31003_page = current_page + 1
+                st.session_state.h31003_reviewed[current_page + 1] = False
+                st.rerun()
+            else:
+                st.session_state.h31003_finished = True
+                st.rerun()
 # ==================== ROUTER ====================
 if not profile_is_complete():
     render_profile_setup()
@@ -910,8 +1323,8 @@ elif st.session_state.menu == "✏️ Isi Kalimat":
     cloze_view()
 elif st.session_state.menu == "🔄 Susun Kalimat":
     scramble_view()
-elif st.session_state.menu == "Susun Jawaban":
-    matching_view()
+elif st.session_state.menu == "H31003 Exam":
+    h31003_exam()
 else:
     scramble_view()
 
