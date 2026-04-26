@@ -771,15 +771,15 @@ def matching_view():
     kode_list = matching_df["kode"].unique()
     selected_kode = st.radio("Pilih paket soal", kode_list, horizontal=True)
 
-    # Filter data berdasarkan kode
     data = matching_df[matching_df["kode"] == selected_kode].copy()
     if len(data) == 0:
         st.warning(f"Tidak ada data untuk kode {selected_kode}")
         return
 
     key_prefix = f"matching_{selected_kode}"
+    n_soal = len(data)
 
-    # Reset state jika ganti kode
+    # Reset state jika kode berubah
     if "last_matching_kode" not in st.session_state:
         st.session_state.last_matching_kode = selected_kode
     if st.session_state.last_matching_kode != selected_kode:
@@ -790,19 +790,16 @@ def matching_view():
 
     # Inisialisasi state
     if f"{key_prefix}_answers" not in st.session_state:
-        st.session_state[f"{key_prefix}_answers"] = [None] * len(data)
+        st.session_state[f"{key_prefix}_answers"] = [None] * n_soal
         st.session_state[f"{key_prefix}_submitted"] = False
         st.session_state[f"{key_prefix}_shuffle_order"] = None
-        st.session_state[f"{key_prefix}_wrong_indices"] = set()  # untuk menyimpan indeks soal yang salah
+    else:
+        if len(st.session_state[f"{key_prefix}_answers"]) != n_soal:
+            st.session_state[f"{key_prefix}_answers"] = [None] * n_soal
+            st.session_state[f"{key_prefix}_submitted"] = False
+            st.session_state[f"{key_prefix}_shuffle_order"] = None
 
-    # Sinkronkan panjang
-    if len(st.session_state[f"{key_prefix}_answers"]) != len(data):
-        st.session_state[f"{key_prefix}_answers"] = [None] * len(data)
-        st.session_state[f"{key_prefix}_submitted"] = False
-        st.session_state[f"{key_prefix}_shuffle_order"] = None
-        st.session_state[f"{key_prefix}_wrong_indices"] = set()
-
-    # Acak urutan jawaban
+    # Acak urutan jawaban sekali per paket
     if st.session_state[f"{key_prefix}_shuffle_order"] is None:
         jawaban_list = data["jawaban"].tolist()
         random.shuffle(jawaban_list)
@@ -810,34 +807,24 @@ def matching_view():
 
     shuffled_jawaban = st.session_state[f"{key_prefix}_shuffle_order"]
 
-    # Tampilkan soal
-    for idx in range(len(data)):
+    # Buat mapping jawaban -> arti
+    jawaban_to_arti = dict(zip(data["jawaban"], data["arti2"]))
+
+    # Tampilkan dropdown untuk setiap soal
+    for idx in range(n_soal):
         row = data.iloc[idx]
         soal = row["soal"]
         pinyin_soal = row.get("pinyin1", "")
-        arti_soal = row.get("arti1", "")
-        
-        # Tentukan apakah expander ini salah (setelah cek jawaban)
-        is_wrong = (st.session_state[f"{key_prefix}_submitted"] and 
-                    st.session_state[f"{key_prefix}_answers"][idx] != row["jawaban"])
-        # Tambahkan class CSS untuk border merah jika salah
-        expander_label = f"Soal {idx+1}: {soal}"
-        if is_wrong:
-            expander_label = f"❌ {expander_label}"
-        
-        with st.expander(expander_label):
-            # Tombol pinyin
+        with st.expander(f"Soal {idx+1}: {soal}"):
             pinyin_key = f"show_pinyin_{selected_kode}_{idx}"
             if st.button(f"🔊 Tampilkan Pinyin {idx+1}", key=f"pinyin_btn_{selected_kode}_{idx}"):
                 st.session_state[pinyin_key] = not st.session_state.get(pinyin_key, False)
             if st.session_state.get(pinyin_key, False):
                 st.caption(f"📖 Pinyin: {pinyin_soal}")
 
-            # Jika sudah dijawab dan salah, tampilkan arti soal di dalam expander
-            if is_wrong:
-                st.warning(f"💡 Arti soal: {arti_soal}")
+            if st.session_state[f"{key_prefix}_submitted"] and st.session_state[f"{key_prefix}_answers"][idx] != row["jawaban"]:
+                st.info(f"💡 Arti soal: {row.get('arti1', '')}")
 
-        # Dropdown untuk memilih jawaban
         current_ans = st.session_state[f"{key_prefix}_answers"][idx]
         default_idx = None
         if current_ans in shuffled_jawaban:
@@ -850,40 +837,66 @@ def matching_view():
             label_visibility="collapsed"
         )
 
-    # Tombol cek jawaban
+    # Tombol Cek Jawaban
     if st.button("✅ Cek Jawaban", key=f"check_{selected_kode}", use_container_width=True):
         st.session_state[f"{key_prefix}_submitted"] = True
+        st.rerun()
+
+    # ========== TAMPILKAN REVIEW JIKA SUDAH DISUBMIT ==========
+    if st.session_state.get(f"{key_prefix}_submitted", False):
         all_correct = True
-        wrong_indices = set()
-        wrong_pairs = []
-        for idx in range(len(data)):
+        results = []
+        for idx in range(n_soal):
             row = data.iloc[idx]
             user_ans = st.session_state[f"{key_prefix}_answers"][idx]
             correct_ans = row["jawaban"]
-            if user_ans != correct_ans:
+            arti_soal = row.get("arti1", "")
+            arti_user = jawaban_to_arti.get(user_ans, "") if user_ans else ""
+            arti_benar = row.get("arti2", "")
+            is_correct = (user_ans == correct_ans)
+            if not is_correct:
                 all_correct = False
-                wrong_indices.add(idx)
-                wrong_pairs.append((idx+1, row["soal"], correct_ans, row.get("arti2", "")))
-        st.session_state[f"{key_prefix}_wrong_indices"] = wrong_indices
+            results.append({
+                "no": idx+1,
+                "soal": row["soal"],
+                "arti_soal": arti_soal,
+                "jawaban_user": user_ans if user_ans is not None else "(belum dipilih)",
+                "arti_user": arti_user,
+                "jawaban_benar": correct_ans,
+                "arti_benar": arti_benar,
+                "status": "✅" if is_correct else "❌"
+            })
+
         if all_correct:
             st.success("🎉 Semua jawaban tepat! Selamat.")
         else:
             st.error("❌ Masih ada jawaban yang salah. Perbaiki yang ditandai.")
-            for nomor, soal, jawaban, arti in wrong_pairs:
-                st.markdown(f"- **Soal {nomor}:** {soal} → jawaban benar: **{jawaban}** ({arti})")
-        st.rerun()
 
-    # Tombol reset
+        st.markdown("### 📋 Review Jawaban")
+        for res in results:
+            st.markdown(f"**{res['no']}. {res['soal']}** {res['status']}")
+            st.markdown(f"  📖 Arti soal: {res['arti_soal']}")
+            st.markdown(f"- Jawaban Anda: `{res['jawaban_user']}`")
+            if res['arti_user']:
+                st.markdown(f"  - Arti: {res['arti_user']}")
+            st.markdown(f"- Jawaban benar: `{res['jawaban_benar']}`")
+            st.markdown(f"  - Arti: {res['arti_benar']}")
+            st.markdown("---")
+
+        # Tombol untuk kembali mengedit
+        if st.button("✏️ Perbaiki Jawaban", key=f"fix_{selected_kode}", use_container_width=True):
+            st.session_state[f"{key_prefix}_submitted"] = False
+            st.rerun()
+
+    # Tombol Reset
     if st.button("🔄 Reset jawaban", key=f"reset_{selected_kode}", use_container_width=True):
         for key in list(st.session_state.keys()):
             if key.startswith(f"match_{selected_kode}_") or key.startswith(f"show_pinyin_{selected_kode}_"):
                 st.session_state.pop(key, None)
-        st.session_state[f"{key_prefix}_answers"] = [None] * len(data)
+        st.session_state[f"{key_prefix}_answers"] = [None] * n_soal
         st.session_state[f"{key_prefix}_submitted"] = False
         st.session_state[f"{key_prefix}_shuffle_order"] = None
-        st.session_state[f"{key_prefix}_wrong_indices"] = set()
         st.rerun()
-
 # ==================== ROUTER ====================
 if not profile_is_complete():
     render_profile_setup()
